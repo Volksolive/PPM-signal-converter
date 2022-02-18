@@ -39,35 +39,56 @@
 
 // Mode Switch input pin
 // Can be any pin except D9 (PPM signal pin) and D13 (built-in LED)
+// Default: D2
 #define MODE_PIN 2
 
 // Potentiometer/analog signal input pin
 // Can be chosen between A0 to A7
+// Default: A0
 #define POT_PIN A0
 
 // PWM input pin
 // can be chosen between D2 and D7
+// Defaul: D5
 #define PWM_PIN 5
 
-// uncomment this line to invert the mode selected by the physical switch
+// Uncomment this define to invert the mode selected by the physical switch
 //#define INVERT_MODE
 
-// Mode pin filtering to prevents glitches or parasites from randomly chnaging the mode 
+// Mode pin filtering to prevents glitches or parasites from randomly changing the mode 
 // The filter count must be between 1 (no filtering) and 50 (0.5s filtering)
-// default 20 (0.2s filtering)
+// default: 20 (0.2s filtering)
 #define MODE_PIN_FILTER_COUNT 20
 
 // Change these values to change the PPM min and max range
 // This values are represented in microsecond => 1000 represent 1 millisecond
 // Classic PPM signal range from 1ms to 2ms
+// Default: 1000 (1ms) and 2000 (2ms)
 #define PPM_MIN_TIMING 1000
 #define PPM_MAX_TIMING 2000
 
 // Change these values to adjust the analog signal range (potentiometer)
 // Scale factor must be a float (whole number with decimal point)
+// Default: 1
 #define ADC_SCALE_FACTOR 1.0
 // Offset must be an integer (number with no decimal point)
+// Default: 0
 #define ADC_OFFSET 0
+
+// Uncomment this define if you have a car ESC with brake or reverse speed
+// ESC with brake/revere have their PPM lower half range for braking/reversing
+// And upper half range for forward rotation
+// On a CNC machine that can be problematic 
+// This define will convert the PWM signal from the upper half of the PPM range.
+#define CAR_ESC
+
+#ifdef CAR_ESC
+// Change this value to set the minimum PWM threshold that convert into PPM
+// If the PWM is below this value the PPM is minimun timing otherwise PPM is above mid range
+// This value is in percent from 0 to 100
+// Default: 2%
+#define CAR_ESC_PWM_MIN_THRESHOLD 2
+#endif
 
 /***********************************************/
 /*             APPLICATION CONSTANT            */
@@ -84,21 +105,30 @@
 // PPM 1ms value = ClockI/O * 1ms / clock prescaler = (16Mhz * 0.001) / 8
 #define PPM_1MS_VALUE 2000
 // PPM 1ms factor is PPM 1ms value divided by 1000 to accomodate for PPM timing defined in microseconds
-#define PPM_1MS_FACTOR 2
-#define PPM_MIN_TIMING_VALUE PPM_1MS_FACTOR * PPM_MIN_TIMING
-#define PPM_MAX_TIMING_VALUE PPM_1MS_FACTOR * PPM_MAX_TIMING
-#define PPM_RANGE_VALUE PPM_MAX_TIMING_VALUE - PPM_MIN_TIMING_VALUE
-#define PPM_RANGE_FACTOR ((float)(PPM_MAX_TIMING - PPM_MIN_TIMING) * 0.001)
+#define PPM_1MS_FACTOR (PPM_1MS_VALUE / 1000)
+const uint16_t PPM_MIN_TIMING_VALUE = (PPM_1MS_FACTOR * PPM_MIN_TIMING);
+const uint16_t PPM_MAX_TIMING_VALUE = (PPM_1MS_FACTOR * PPM_MAX_TIMING);
+const uint16_t PPM_RANGE_VALUE = (PPM_MAX_TIMING_VALUE - PPM_MIN_TIMING_VALUE);
+const float PPM_RANGE_FACTOR = ((float)(PPM_MAX_TIMING - PPM_MIN_TIMING) * 0.001);
+
+#ifdef CAR_ESC
+const uint16_t PPM_MID_RANGE_VALUE = (PPM_RANGE_VALUE / 2);
+#endif
 
 // ADC to PPM factor is the cross product of the PPM range divided by the max ADC value and multiplied by a user defined scale factor
 // the max ADC value is 10bits = 1024
 // 0.512 = 1024 (10 bits) / 2000 (PPM 1ms value)
-#define ADC_TO_PPM_FACTOR (PPM_RANGE_FACTOR / 0.512) * (float)ADC_SCALE_FACTOR
+const float ADC_TO_PPM_FACTOR = (PPM_RANGE_FACTOR / 0.512) * (float)ADC_SCALE_FACTOR;
 
 // PWM to PPM factor is the cross product of the PPM range divided by the max PWM value
 // Max PWM value is ~= 10000 => ~100ms loop / 10us ISR reading
 // 5.0 = 10000 (PWM max value / 2000 (PPM 1ms value)
-#define PWM_TO_PPM_FACTOR PPM_RANGE_FACTOR/5.0
+const float PWM_TO_PPM_FACTOR = (PPM_RANGE_FACTOR/5.0);
+
+#ifdef CAR_ESC
+#define PWM_MAX_VALUE 10000
+const uint16_t PWM_MIN_THRESHOLD_VALUE = (PWM_MAX_VALUE * ((float)CAR_ESC_PWM_MIN_THRESHOLD/100.0));
+#endif
 
 /***********************************************/
 /*                GLOBAL VARIABLE              */
@@ -126,7 +156,7 @@ enum {
  * The main loop read the value every 100ms and reset the variable
  * This variable is 0 when the duty cycle is 0% and 10000 (100ms/10us) when duty cycle is 100%
  */
-volatile unsigned int PwmDutyCycleCounter = 0;
+volatile uint16_t PwmDutyCycleCounter = 0;
 
 /***********************************************/
 /*                LOCAL FUNCTIONS              */
@@ -241,13 +271,13 @@ void mode_check(bool* const Mode) {
  * \param[in]    AdcValue: ADC signal value 10bits = 0 to 1024 
  * \return       Converted PPM value
  */
-unsigned int adc_to_ppm(unsigned int AdcValue) {
-  float Temp = AdcValue + ADC_OFFSET;
+uint16_t adc_to_ppm(uint16_t AdcValue) {
+  float Temp = (AdcValue + ADC_OFFSET);
 
   if(Temp < 0.0)
     return 0;
 
-  return Temp * ADC_TO_PPM_FACTOR;
+  return (Temp * ADC_TO_PPM_FACTOR);
 }
 
 /**
@@ -255,15 +285,28 @@ unsigned int adc_to_ppm(unsigned int AdcValue) {
  * \param[in]    PwmDCValue: PWM signal duty cycle value 0 to 10000
  * \return       Converted PPM value
  */
-unsigned int pwm_to_ppm(unsigned int PwmDCValue) {
-  return (float)PwmDCValue * (float)PWM_TO_PPM_FACTOR;
+uint16_t pwm_to_ppm(uint16_t PwmDCValue) {
+#ifdef CAR_ESC
+  uint16_t TempI;
+  float TempF;
+
+  if(PwmDCValue <= PWM_MIN_THRESHOLD_VALUE)
+    return 0;
+    
+  TempI = (PwmDCValue / 2);
+  TempF = ((float)TempI * (float)PWM_TO_PPM_FACTOR);
+  
+  return (PPM_MID_RANGE_VALUE + TempF);
+#else
+  return ((float)PwmDCValue * (float)PWM_TO_PPM_FACTOR);
+#endif
 }
 
 /**
  * \brief        Set the PPM value 
  * \param[in]    PpmValue: PPM value
  */
-void ppm_set_value(unsigned int PpmValue) {
+void ppm_set_value(uint16_t PpmValue) {
   if(PpmValue > PPM_RANGE_VALUE)
     OCR1A = PPM_MAX_TIMING_VALUE;
   else
@@ -337,8 +380,8 @@ void setup(void) {
  */
 void loop(void) {
   bool Mode = MODE_MANU;
-  unsigned char State = STATE_INIT;
-  unsigned char PwmUpdateCounter;
+  uint8_t State = STATE_INIT;
+  uint8_t PwmUpdateCounter;
 
   // Initialization of the mode before the main loop is executed
   if(mode_init(&Mode)) { 
