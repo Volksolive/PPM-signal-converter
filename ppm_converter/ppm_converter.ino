@@ -80,13 +80,14 @@
 // And upper half range for forward rotation
 // On a CNC machine that can be problematic 
 // This define will convert the PWM signal from the upper half of the PPM range.
-#define CAR_ESC
+//#define CAR_ESC
 
-#ifdef CAR_ESC
+
 // Change this value to set the minimum PWM threshold that convert into PPM
 // If the PWM is below this value the PPM is minimun timing otherwise PPM is above mid range
 // This value is in percent from 0 to 100
 // Default: 2%
+#ifdef CAR_ESC
 #define CAR_ESC_PWM_MIN_THRESHOLD 2
 #endif
 
